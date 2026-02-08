@@ -1,0 +1,15 @@
+﻿{
+  "name": "isletme-root",
+  "private": true,
+  "scripts": {
+    "setup:local": "docker compose up -d && npm --prefix apps/api install && npm --prefix apps/web install && npm --prefix apps/api run prisma:generate && npm --prefix apps/api run prisma:migrate && npm --prefix apps/api run prisma:seed",
+    "dev": "concurrently -n api,worker,web -c green,magenta,blue \"npm --prefix apps/api run dev\" \"npm --prefix apps/api run worker:dev\" \"npm --prefix apps/web run dev\"",
+    "verify:local": "npm --prefix apps/api run verify:local",
+    "api": "npm --prefix apps/api run dev",
+    "worker": "npm --prefix apps/api run worker:dev",
+    "web": "npm --prefix apps/web run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

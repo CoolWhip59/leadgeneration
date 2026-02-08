@@ -1,0 +1,180 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum WebsiteCheckStatus {
+  PENDING
+  OK
+  NO_WEBSITE
+  SOCIAL_ONLY
+  TIMEOUT
+  HTTP_ERROR
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  role         String   @default("user")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
+
+  jobs         Job[]
+}
+
+model City {
+  id        String   @id @default(uuid())
+  name      String
+  country   String   @default("TR")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  businesses Business[]
+  jobCities JobCity[]
+
+  @@unique([name, country])
+  @@index([name])
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  businesses Business[]
+  jobs       Job[]
+
+  @@index([name])
+}
+
+model Business {
+  id             String   @id @default(uuid())
+  placeId        String   @unique
+  name           String
+  address        String
+  phone          String?
+  websiteUrl     String?
+  googleMapsUrl  String
+  rating         Float?
+  lat            Float
+  lng            Float
+  websiteStatus  WebsiteCheckStatus @default(PENDING)
+  websiteCheckedAt DateTime?
+  websiteHttpStatus Int?
+  websiteResponseMs Int?
+  cityId         String
+  categoryId     String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+
+  city           City     @relation(fields: [cityId], references: [id])
+  category       Category @relation(fields: [categoryId], references: [id])
+  websiteChecks  WebsiteCheck[]
+
+  @@index([cityId, categoryId])
+  @@index([name])
+  @@index([websiteStatus])
+}
+
+model WebsiteCheck {
+  id           String             @id @default(uuid())
+  businessId   String
+  status       WebsiteCheckStatus @default(PENDING)
+  httpStatus   Int?
+  responseMs   Int?
+  checkedAt    DateTime?
+  error        String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  deletedAt    DateTime?
+
+  business     Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([status])
+}
+
+model Job {
+  id           String    @id @default(uuid())
+  userId       String
+  categoryId   String
+  status       JobStatus @default(QUEUED)
+  progress     Int       @default(0)
+  total        Int       @default(0)
+  error        String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  user         User      @relation(fields: [userId], references: [id])
+  category     Category  @relation(fields: [categoryId], references: [id])
+  jobCities    JobCity[]
+
+  @@index([status])
+  @@index([userId])
+}
+
+model JobCity {
+  id         String    @id @default(uuid())
+  jobId      String
+  cityId     String
+  status     JobStatus @default(QUEUED)
+  attempt    Int       @default(1)
+  progress   Int       @default(0)
+  total      Int       @default(0)
+  errorCode  String?
+  error      String?
+  queueJobId String?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  job        Job  @relation(fields: [jobId], references: [id])
+  city       City @relation(fields: [cityId], references: [id])
+  errorLogs  JobCityErrorLog[]
+
+  @@index([status])
+  @@index([jobId])
+  @@index([cityId])
+  @@index([jobId, cityId, attempt])
+}
+
+model JobCityErrorLog {
+  id        String   @id @default(uuid())
+  jobId     String
+  jobCityId String
+  cityId    String
+  errorCode String
+  message   String
+  stack     String?
+  createdAt DateTime @default(now())
+
+  jobCity   JobCity @relation(fields: [jobCityId], references: [id])
+
+  @@index([jobId])
+  @@index([jobCityId])
+  @@index([cityId])
+}

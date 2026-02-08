@@ -1,0 +1,21 @@
+﻿# Node
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env
+.env
+.env.*
+
+# Next.js
+.next
+out
+
+# Prisma
+apps/api/prisma/migrations
+
+# OS
+.DS_Store
+Thumbs.db
