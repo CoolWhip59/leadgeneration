@@ -24,6 +24,13 @@ enum WebsiteCheckStatus {
   HTTP_ERROR
 }
 
+enum OutboundMessageStatus {
+  QUEUED
+  SENT
+  FAILED
+  SKIPPED
+}
+
 model User {
   id           String   @id @default(uuid())
   email        String   @unique
@@ -40,6 +47,10 @@ model City {
   id        String   @id @default(uuid())
   name      String
   country   String   @default("TR")
+  bboxSouth Float?
+  bboxWest  Float?
+  bboxNorth Float?
+  bboxEast  Float?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
@@ -67,7 +78,8 @@ model Category {
 
 model Business {
   id             String   @id @default(uuid())
-  placeId        String   @unique
+  externalId     String   @unique
+  source         String
   name           String
   address        String
   phone          String?
@@ -80,6 +92,10 @@ model Business {
   websiteCheckedAt DateTime?
   websiteHttpStatus Int?
   websiteResponseMs Int?
+  whatsappOptIn  Boolean  @default(false)
+  whatsappOptInAt DateTime?
+  whatsappLastMessageAt DateTime?
+  whatsappLastMessageStatus String?
   cityId         String
   categoryId     String
   createdAt      DateTime @default(now())
@@ -89,6 +105,7 @@ model Business {
   city           City     @relation(fields: [cityId], references: [id])
   category       Category @relation(fields: [categoryId], references: [id])
   websiteChecks  WebsiteCheck[]
+  outboundMessages OutboundMessageLog[]
 
   @@index([cityId, categoryId])
   @@index([name])
@@ -130,6 +147,7 @@ model Job {
   user         User      @relation(fields: [userId], references: [id])
   category     Category  @relation(fields: [categoryId], references: [id])
   jobCities    JobCity[]
+  outboundMessages OutboundMessageLog[]
 
   @@index([status])
   @@index([userId])
@@ -177,4 +195,28 @@ model JobCityErrorLog {
   @@index([jobId])
   @@index([jobCityId])
   @@index([cityId])
+}
+
+model OutboundMessageLog {
+  id          String               @id @default(uuid())
+  jobId       String
+  businessId  String
+  channel     String               @default("whatsapp")
+  toPhone     String
+  templateName String?
+  status      OutboundMessageStatus
+  reason      String?
+  providerMessageId String?
+  payload     String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  job         Job                  @relation(fields: [jobId], references: [id])
+  business    Business             @relation(fields: [businessId], references: [id])
+
+  @@index([jobId])
+  @@index([businessId])
+  @@index([status])
+  @@index([channel])
+  @@unique([jobId, businessId, channel])
 }

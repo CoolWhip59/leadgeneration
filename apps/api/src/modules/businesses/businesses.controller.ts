@@ -1,4 +1,4 @@
-﻿import { Controller, Get, Header, Query, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Header, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { BusinessesService } from './businesses.service';
 import { BusinessQueryDto } from './businesses.dto';
@@ -9,14 +9,19 @@ export class BusinessesController {
   constructor(private readonly businesses: BusinessesService) {}
 
   @Get()
-  list(@Query() query: BusinessQueryDto) {
-    return this.businesses.list(query);
+  list(@Req() req: any, @Query() query: BusinessQueryDto) {
+    return this.businesses.list(req.user.sub, query);
   }
 
   @Get('export')
   @Header('Content-Type', 'text/csv')
   @Header('Content-Disposition', 'attachment; filename="businesses.csv"')
-  async export(@Query() query: BusinessQueryDto) {
-    return this.businesses.exportCsv(query);
+  async export(@Req() req: any, @Query() query: BusinessQueryDto) {
+    return this.businesses.exportCsv(req.user.sub, query);
+  }
+
+  @Delete(':id')
+  async remove(@Req() req: any, @Param('id') id: string) {
+    return this.businesses.remove(req.user.sub, id);
   }
 }

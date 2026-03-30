@@ -11,9 +11,17 @@ export class BusinessQueryDto {
 
   @IsOptional()
   @IsString()
+  district?: string;
+
+  @IsOptional()
+  @IsString()
   search?: string;
 
   @IsOptional()
   @IsString()
   noWebsite?: string;
+
+  @IsOptional()
+  @IsString()
+  hasPhone?: string;
 }

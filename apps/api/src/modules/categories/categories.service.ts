@@ -8,7 +8,7 @@ export class CategoriesService {
 
   list() {
     return this.prisma.category.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, slug: { not: 'tum-isletmeler' } },
       orderBy: { name: 'asc' },
     });
   }

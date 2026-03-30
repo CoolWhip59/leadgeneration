@@ -40,6 +40,16 @@ type ErrorLog = {
   retryable: boolean;
 };
 
+class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 async function apiFetch(path: string, token: string, options: RequestInit = {}) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -53,10 +63,27 @@ async function apiFetch(path: string, token: string, options: RequestInit = {}) 
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || 'Request failed');
+    throw new ApiError(text || 'Request failed', response.status);
   }
 
   return response.json();
+}
+
+function normalizeJobPayload(raw: unknown): Job | null {
+  const payload =
+    raw &&
+    typeof raw === 'object' &&
+    'data' in raw &&
+    (raw as Record<string, unknown>).data &&
+    typeof (raw as Record<string, unknown>).data === 'object'
+      ? ((raw as Record<string, unknown>).data as Job)
+      : (raw as Job);
+
+  if (!payload || typeof payload !== 'object' || !('id' in payload)) {
+    return null;
+  }
+
+  return payload;
 }
 
 export default function JobDetailPage({ params }: { params: { id: string } }) {
@@ -68,6 +95,16 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
   const [streamSeed, setStreamSeed] = useState(0);
   const loadErrorsTimerRef = useRef<number | null>(null);
 
+  const messageOf = (err: unknown) => (err instanceof Error ? err.message : 'Request failed');
+
+  const handleUnauthorized = (err: unknown) => {
+    if (!(err instanceof ApiError) || err.status !== 401) return false;
+    localStorage.removeItem('token');
+    setToken(null);
+    setError('Oturum suresi doldu. Lutfen tekrar giris yapin.');
+    return true;
+  };
+
   useEffect(() => {
     const stored = localStorage.getItem('token');
     if (stored) setToken(stored);
@@ -75,7 +112,10 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
 
   const loadJob = async (jwt: string) => {
     const jobData = await apiFetch(`/jobs/${params.id}`, jwt);
-    setJob(jobData);
+    const normalized = normalizeJobPayload(jobData);
+    if (normalized) {
+      setJob(normalized);
+    }
   };
 
   const loadErrors = async (jwt: string) => {
@@ -87,8 +127,9 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
     setLoading(true);
     try {
       await Promise.all([loadJob(jwt), loadErrors(jwt)]);
-    } catch (err: any) {
-      setError(err.message || 'Load failed');
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      setError(messageOf(err) || 'Load failed');
     } finally {
       setLoading(false);
     }
@@ -101,48 +142,73 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
 
   useEffect(() => {
     if (!token) return;
+    let source: EventSource | null = null;
+    let cancelled = false;
 
-    const streamUrl = `${API_BASE}/jobs/${params.id}/stream?token=${encodeURIComponent(token)}`;
-    const source = new EventSource(streamUrl);
-
-    source.onmessage = (event) => {
+    const connect = async () => {
       try {
-        const payload = JSON.parse(event.data) as Job;
-        setJob(payload);
-      } catch {
-        // ignore
+        const data = await apiFetch(`/jobs/${params.id}/stream-token`, token);
+        if (cancelled) return;
+
+        const streamUrl = `${API_BASE}/jobs/${params.id}/stream?token=${encodeURIComponent(data.streamToken)}`;
+        source = new EventSource(streamUrl);
+
+        source.onmessage = (event) => {
+          try {
+            const rawPayload = JSON.parse(event.data) as unknown;
+            const payload = normalizeJobPayload(rawPayload);
+            if (payload) {
+              setJob(payload);
+            }
+          } catch {
+            // ignore
+          }
+        };
+
+        source.addEventListener('city_error', () => {
+          if (!token) return;
+          if (loadErrorsTimerRef.current) return;
+          loadErrorsTimerRef.current = window.setTimeout(async () => {
+            loadErrorsTimerRef.current = null;
+            try {
+              await loadErrors(token);
+            } catch (err) {
+              if (handleUnauthorized(err)) return;
+              setError(messageOf(err));
+            }
+          }, 750);
+        });
+
+        source.addEventListener('completed', () => {
+          source?.close();
+        });
+
+        source.addEventListener('failed', (event) => {
+          try {
+            const payload = JSON.parse((event as MessageEvent).data);
+            setError(payload?.error || 'Job failed');
+          } catch {
+            setError('Job failed');
+          }
+          source?.close();
+        });
+
+        source.onerror = () => {
+          source?.close();
+        };
+      } catch (err) {
+        if (!cancelled) {
+          if (handleUnauthorized(err)) return;
+          setError(messageOf(err) || 'Canli baglanti baslatilamadi');
+        }
       }
     };
 
-    source.addEventListener('city_error', () => {
-      if (!token) return;
-      if (loadErrorsTimerRef.current) return;
-      loadErrorsTimerRef.current = window.setTimeout(async () => {
-        loadErrorsTimerRef.current = null;
-        await loadErrors(token);
-      }, 750);
-    });
-
-    source.addEventListener('completed', () => {
-      source.close();
-    });
-
-    source.addEventListener('failed', (event) => {
-      try {
-        const payload = JSON.parse((event as MessageEvent).data);
-        setError(payload?.error || 'Job failed');
-      } catch {
-        setError('Job failed');
-      }
-      source.close();
-    });
-
-    source.onerror = () => {
-      source.close();
-    };
+    connect();
 
     return () => {
-      source.close();
+      cancelled = true;
+      source?.close();
       if (loadErrorsTimerRef.current) {
         window.clearTimeout(loadErrorsTimerRef.current);
         loadErrorsTimerRef.current = null;
@@ -156,8 +222,9 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
       await apiFetch(`/job-cities/${jobCityId}/retry`, token, { method: 'POST' });
       await loadAll(token);
       setStreamSeed((prev) => prev + 1);
-    } catch (err: any) {
-      setError(err.message || 'Retry failed');
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      setError(messageOf(err) || 'Retry failed');
     }
   };
 
@@ -179,8 +246,9 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
   const attemptGroups = useMemo(() => {
     if (!job) return [] as { city: string; attempts: JobCity[] }[];
     const map = new Map<string, JobCity[]>();
-    for (const jc of job.jobCities) {
-      const key = jc.city.name;
+    const jobCities = Array.isArray(job.jobCities) ? job.jobCities : [];
+    for (const jc of jobCities) {
+      const key = jc?.city?.name || 'Bilinmeyen Sehir';
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(jc);
     }
@@ -214,13 +282,13 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
         {job && (
           <div>
             <p className="muted">
-              Durum: {job.status} · Kategori: {job.category.name}
+              Durum: {job.status || '-'} · Kategori: {job.category?.name || 'Bilinmiyor'}
             </p>
             <div className="progress">
               <div className="progress-bar" style={{ width: `${progressPercent}%` }} />
             </div>
             <div className="muted" style={{ marginTop: 6 }}>
-              {job.progress}/{job.total}
+              {job.progress ?? 0}/{job.total ?? 0}
             </div>
           </div>
         )}

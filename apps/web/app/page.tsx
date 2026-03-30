@@ -50,6 +50,24 @@ type CityError = {
   error?: string;
 };
 
+type Metrics = {
+  jobs: { total: number; running: number; failed: number; completed: number };
+  businesses: { total: number; noWebsite: number };
+  latestJob?: { id: string; status: string; progress: number; total: number; createdAt: string } | null;
+};
+
+const ALL_CATEGORIES_OPTION = '__all__';
+
+class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 async function apiFetch(path: string, token?: string, options: RequestInit = {}) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -63,7 +81,7 @@ async function apiFetch(path: string, token?: string, options: RequestInit = {})
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || 'Request failed');
+    throw new ApiError(text || 'Request failed', response.status);
   }
 
   if (response.headers.get('Content-Type')?.includes('text/csv')) {
@@ -82,15 +100,34 @@ export default function Page() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [jobCityIds, setJobCityIds] = useState<string[]>([]);
-  const [jobCategoryId, setJobCategoryId] = useState('');
+  const [jobCategoryId, setJobCategoryId] = useState(ALL_CATEGORIES_OPTION);
   const [filterCityId, setFilterCityId] = useState('');
   const [filterCategoryId, setFilterCategoryId] = useState('');
+  const [districtFilter, setDistrictFilter] = useState('');
   const [search, setSearch] = useState('');
   const [noWebsiteOnly, setNoWebsiteOnly] = useState(true);
+  const [hasPhoneFilter, setHasPhoneFilter] = useState<'all' | 'yes' | 'no'>('all');
   const [error, setError] = useState('');
   const [streamJobId, setStreamJobId] = useState<string | null>(null);
   const [streamJob, setStreamJob] = useState<Job | null>(null);
   const [cityErrors, setCityErrors] = useState<CityError[]>([]);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [deletingBusinessId, setDeletingBusinessId] = useState<string | null>(null);
+
+  const messageOf = (err: unknown) => (err instanceof Error ? err.message : 'Request failed');
+
+  const handleUnauthorized = (err: unknown) => {
+    if (!(err instanceof ApiError) || err.status !== 401) return false;
+    localStorage.removeItem('token');
+    setToken(null);
+    setJobs([]);
+    setStreamJobId(null);
+    setStreamJob(null);
+    setCityErrors([]);
+    setMetrics(null);
+    setError('Oturum suresi doldu. Lutfen tekrar giris yapin.');
+    return true;
+  };
 
   useEffect(() => {
     const stored = localStorage.getItem('token');
@@ -103,75 +140,133 @@ export default function Page() {
       .then(([cityList, categoryList]) => {
         setCities(cityList);
         setCategories(categoryList);
+        void loadMetrics();
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => {
+        if (handleUnauthorized(err)) return;
+        setError(messageOf(err));
+      });
   }, [token]);
+
+  const loadMetrics = async () => {
+    if (!token) return;
+    try {
+      const data = await apiFetch('/metrics', token);
+      setMetrics(data);
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      setError(messageOf(err));
+    }
+  };
 
   useEffect(() => {
     if (!token || !streamJobId) return;
 
     setCityErrors([]);
+    setStreamJob(null);
+    let source: EventSource | null = null;
+    let cancelled = false;
 
-    const streamUrl = `${API_BASE}/jobs/${streamJobId}/stream?token=${encodeURIComponent(token)}`;
-    const source = new EventSource(streamUrl);
-
-    source.onmessage = (event) => {
+    const connect = async () => {
       try {
-        const payload = JSON.parse(event.data);
-        setStreamJob(payload);
-      } catch {
-        // ignore malformed packets
+        const data = await apiFetch(`/jobs/${streamJobId}/stream-token`, token);
+        if (cancelled) return;
+
+        const streamUrl = `${API_BASE}/jobs/${streamJobId}/stream?token=${encodeURIComponent(data.streamToken)}`;
+        source = new EventSource(streamUrl);
+
+        source.onmessage = (event) => {
+          try {
+            const rawPayload = JSON.parse(event.data) as unknown;
+            const payload =
+              rawPayload &&
+              typeof rawPayload === 'object' &&
+              'data' in rawPayload &&
+              (rawPayload as Record<string, unknown>).data &&
+              typeof (rawPayload as Record<string, unknown>).data === 'object'
+                ? ((rawPayload as Record<string, unknown>).data as Job)
+                : (rawPayload as Job);
+
+            if (payload && typeof payload === 'object' && 'id' in payload) {
+              setStreamJob(payload);
+            }
+          } catch {
+            // ignore malformed packets
+          }
+        };
+
+        source.addEventListener('city_error', (event) => {
+          try {
+            const payload = JSON.parse((event as MessageEvent).data) as CityError;
+            setCityErrors((prev) => [...prev, payload]);
+          } catch {
+            // ignore
+          }
+        });
+
+        source.addEventListener('completed', () => {
+          void loadJobs();
+          source?.close();
+        });
+
+        source.addEventListener('failed', (event) => {
+          try {
+            const payload = JSON.parse((event as MessageEvent).data);
+            setError(payload?.error || 'Job failed');
+          } catch {
+            setError('Job failed');
+          }
+          source?.close();
+        });
+
+        source.onerror = () => {
+          source?.close();
+        };
+      } catch (err) {
+        if (!cancelled) {
+          if (handleUnauthorized(err)) return;
+          setError(messageOf(err) || 'Canli baglanti baslatilamadi');
+        }
       }
     };
 
-    source.addEventListener('city_error', (event) => {
-      try {
-        const payload = JSON.parse((event as MessageEvent).data) as CityError;
-        setCityErrors((prev) => [...prev, payload]);
-      } catch {
-        // ignore
-      }
-    });
-
-    source.addEventListener('completed', () => {
-      loadJobs();
-      source.close();
-    });
-
-    source.addEventListener('failed', (event) => {
-      try {
-        const payload = JSON.parse((event as MessageEvent).data);
-        setError(payload?.error || 'Job failed');
-      } catch {
-        setError('Job failed');
-      }
-      source.close();
-    });
-
-    source.onerror = () => {
-      source.close();
-    };
+    connect();
 
     return () => {
-      source.close();
+      cancelled = true;
+      source?.close();
     };
   }, [token, streamJobId]);
 
   const loadJobs = async () => {
     if (!token) return;
-    const data = await apiFetch('/jobs', token);
-    setJobs(data);
+    try {
+      const data = await apiFetch('/jobs', token);
+      setJobs(data);
+      void loadMetrics();
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      setError(messageOf(err));
+    }
   };
 
   const loadBusinesses = async () => {
     if (!token) return;
-    const params = new URLSearchParams();
-    if (filterCityId) params.set('cityId', filterCityId);
-    if (filterCategoryId) params.set('categoryId', filterCategoryId);
-    if (search) params.set('search', search);
-    if (noWebsiteOnly) params.set('noWebsite', '1');
-    const data = await apiFetch(`/businesses?${params.toString()}`, token);
-    setBusinesses(data);
+    try {
+      const params = new URLSearchParams();
+      if (filterCityId) params.set('cityId', filterCityId);
+      if (filterCategoryId) params.set('categoryId', filterCategoryId);
+      if (districtFilter) params.set('district', districtFilter);
+      if (search) params.set('search', search);
+      if (noWebsiteOnly) params.set('noWebsite', '1');
+      if (hasPhoneFilter === 'yes') params.set('hasPhone', '1');
+      if (hasPhoneFilter === 'no') params.set('hasPhone', '0');
+      const data = await apiFetch(`/businesses?${params.toString()}`, token);
+      setBusinesses(data);
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      setError(messageOf(err));
+    }
   };
 
   const login = async (mode: 'login' | 'register') => {
@@ -189,31 +284,68 @@ export default function Page() {
   };
 
   const createJob = async () => {
-    if (!token || jobCityIds.length === 0 || !jobCategoryId) return;
-    await apiFetch('/jobs', token, {
-      method: 'POST',
-      body: JSON.stringify({ cityIds: jobCityIds, categoryId: jobCategoryId }),
-    });
-    await loadJobs();
+    if (!token || jobCityIds.length === 0) return;
+
+    const payload: { cityIds: string[]; categoryId?: string } = { cityIds: jobCityIds };
+    if (jobCategoryId && jobCategoryId !== ALL_CATEGORIES_OPTION) {
+      payload.categoryId = jobCategoryId;
+    }
+
+    try {
+      await apiFetch('/jobs', token, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      await loadJobs();
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      setError(messageOf(err));
+    }
   };
 
   const exportCsv = async () => {
     if (!token) return;
-    const params = new URLSearchParams();
-    if (filterCityId) params.set('cityId', filterCityId);
-    if (filterCategoryId) params.set('categoryId', filterCategoryId);
-    if (search) params.set('search', search);
-    if (noWebsiteOnly) params.set('noWebsite', '1');
-    const csv = await apiFetch(`/businesses/export?${params.toString()}`, token);
-    const blob = new Blob([csv as string], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'businesses.csv';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    try {
+      const params = new URLSearchParams();
+      if (filterCityId) params.set('cityId', filterCityId);
+      if (filterCategoryId) params.set('categoryId', filterCategoryId);
+      if (districtFilter) params.set('district', districtFilter);
+      if (search) params.set('search', search);
+      if (noWebsiteOnly) params.set('noWebsite', '1');
+      const csv = await apiFetch(`/businesses/export?${params.toString()}`, token);
+      const blob = new Blob([csv as string], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'businesses.csv';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      setError(messageOf(err));
+    }
+  };
+
+  const deleteBusiness = async (businessId: string) => {
+    if (!token || deletingBusinessId) return;
+
+    const approved = window.confirm('Bu isletmeyi sonuclardan silmek istiyor musun?');
+    if (!approved) return;
+
+    setError('');
+    setDeletingBusinessId(businessId);
+    try {
+      await apiFetch(`/businesses/${businessId}`, token, { method: 'DELETE' });
+      setBusinesses((prev) => prev.filter((b) => b.id !== businessId));
+      void loadMetrics();
+    } catch (err) {
+      if (handleUnauthorized(err)) return;
+      setError(messageOf(err));
+    } finally {
+      setDeletingBusinessId(null);
+    }
   };
 
   const statusBadge = useMemo(() => {
@@ -255,6 +387,31 @@ export default function Page() {
   return (
     <main className="grid">
       <div className="panel">
+        <h2>Ozet Metrikler</h2>
+        <div className="grid grid-2">
+          <div>
+            <label>Joblar</label>
+            <div className="muted">
+              Toplam: {metrics?.jobs.total ?? 0} · Calisan: {metrics?.jobs.running ?? 0} · Tamam: {metrics?.jobs.completed ?? 0} · Hata: {metrics?.jobs.failed ?? 0}
+            </div>
+          </div>
+          <div>
+            <label>Isletmeler</label>
+            <div className="muted">
+              Toplam: {metrics?.businesses.total ?? 0} · Websitesi yok: {metrics?.businesses.noWebsite ?? 0}
+            </div>
+          </div>
+        </div>
+        {metrics?.latestJob && (
+          <div className="muted" style={{ marginTop: 8 }}>
+            Son job: {metrics.latestJob.status} · {metrics.latestJob.progress}/{metrics.latestJob.total}
+          </div>
+        )}
+        <div className="actions" style={{ marginTop: 12 }}>
+          <button className="secondary" onClick={loadMetrics}>Metrikleri Yenile</button>
+        </div>
+      </div>
+      <div className="panel">
         <h1>Lead Dashboard</h1>
         <p className="muted">Sehir + sektor sec, kuyruga ekle ve ilerlemeyi izle.</p>
         <div className="grid grid-2">
@@ -278,7 +435,7 @@ export default function Page() {
           <div>
             <label>Sektor</label>
             <select value={jobCategoryId} onChange={(e) => setJobCategoryId(e.target.value)}>
-              <option value="">Seciniz</option>
+              <option value={ALL_CATEGORIES_OPTION}>Tum Isletmeler (Kategori Yok)</option>
               {categories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -335,7 +492,7 @@ export default function Page() {
         <div className="panel">
           <h2>Canli Progress</h2>
           <p className="muted">
-            Job: {streamJob.category.name} · Durum: {streamJob.status}
+            Job: {streamJob.category?.name || 'Bilinmiyor'} · Durum: {streamJob.status || '-'}
           </p>
           <div className="progress">
             <div
@@ -344,16 +501,16 @@ export default function Page() {
             />
           </div>
           <div className="muted" style={{ marginTop: 6 }}>
-            {streamJob.progress}/{streamJob.total}
+            {streamJob.progress ?? 0}/{streamJob.total ?? 0}
           </div>
 
           <div style={{ marginTop: 16 }}>
-            {streamJob.jobCities.map((jc) => (
+            {(Array.isArray(streamJob.jobCities) ? streamJob.jobCities : []).map((jc) => (
               <div key={jc.id} style={{ marginBottom: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <strong>{jc.city.name}</strong>
+                  <strong>{jc.city?.name || 'Sehir'}</strong>
                   <span className="muted">
-                    {jc.progress}/{jc.total}
+                    {jc.progress ?? 0}/{jc.total ?? 0}
                   </span>
                 </div>
                 <div className="progress">
@@ -423,6 +580,24 @@ export default function Page() {
             </select>
           </div>
         </div>
+        <div className="grid grid-2" style={{ marginTop: 12 }}>
+          <div>
+            <label>Ilce (filtre)</label>
+            <input
+              value={districtFilter}
+              onChange={(e) => setDistrictFilter(e.target.value)}
+              placeholder="Orn: Suleymanpasa"
+            />
+          </div>
+          <div>
+            <label>Telefon</label>
+            <select value={hasPhoneFilter} onChange={(e) => setHasPhoneFilter(e.target.value as any)}>
+              <option value="all">Tum kayitlar</option>
+              <option value="yes">Telefonu olanlar</option>
+              <option value="no">Telefonu olmayanlar</option>
+            </select>
+          </div>
+        </div>
         <div className="actions" style={{ marginTop: 16 }}>
           <button onClick={loadBusinesses}>Sonuclari Getir</button>
           <button className="secondary" onClick={exportCsv}>CSV Export</button>
@@ -436,6 +611,7 @@ export default function Page() {
               <th>Telefon</th>
               <th>Website</th>
               <th>Durum</th>
+              <th>Islem</th>
             </tr>
           </thead>
           <tbody>
@@ -451,6 +627,15 @@ export default function Page() {
                   ) : (
                     'OK'
                   )}
+                </td>
+                <td>
+                  <button
+                    className="danger"
+                    onClick={() => deleteBusiness(b.id)}
+                    disabled={Boolean(deletingBusinessId)}
+                  >
+                    {deletingBusinessId === b.id ? 'Siliniyor...' : 'Sil'}
+                  </button>
                 </td>
               </tr>
             ))}

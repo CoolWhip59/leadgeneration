@@ -5,6 +5,9 @@ import { CreateJobDto } from './jobs.dto';
 
 @Injectable()
 export class JobsService {
+  private readonly allBusinessesCategorySlug = 'tum-isletmeler';
+  private readonly allBusinessesCategoryName = 'Tum Isletmeler';
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject('LEAD_QUEUE') private readonly queue: Queue,
@@ -18,9 +21,18 @@ export class JobsService {
 
   async create(userId: string, dto: CreateJobDto) {
     const uniqueCityIds = Array.from(new Set(dto.cityIds));
-    const category = await this.prisma.category.findFirst({
-      where: { id: dto.categoryId, deletedAt: null },
-    });
+    const category = dto.categoryId
+      ? await this.prisma.category.findFirst({
+          where: { id: dto.categoryId, deletedAt: null },
+        })
+      : await this.prisma.category.upsert({
+          where: { slug: this.allBusinessesCategorySlug },
+          update: { name: this.allBusinessesCategoryName, deletedAt: null },
+          create: {
+            name: this.allBusinessesCategoryName,
+            slug: this.allBusinessesCategorySlug,
+          },
+        });
 
     const cities = await this.prisma.city.findMany({
       where: { id: { in: uniqueCityIds }, deletedAt: null },

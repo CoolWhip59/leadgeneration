@@ -7,9 +7,10 @@ const DEFAULT_ADMIN_EMAIL = 'admin@local.dev';
 const DEFAULT_ADMIN_PASSWORD = 'Admin123!';
 
 const cities = [
-  'Istanbul',
+  'İstanbul',
   'Ankara',
-  'Izmir',
+  'İzmir',
+  'Tekirdağ',
   'Bursa',
   'Antalya',
   'Adana',
@@ -20,19 +21,32 @@ const cities = [
 ];
 
 const categories = [
-  { name: 'Kuafor', slug: 'kuafor' },
+  { name: 'Tum Isletmeler', slug: 'tum-isletmeler' },
+  { name: 'Kuaför', slug: 'kuafor' },
   { name: 'Berber', slug: 'berber' },
-  { name: 'Oto Yikama', slug: 'oto-yikama' },
-  { name: 'Disci', slug: 'disci' },
+  { name: 'Oto Yıkama', slug: 'oto-yikama' },
+  { name: 'Dişçi', slug: 'disci' },
   { name: 'Restoran', slug: 'restoran' },
   { name: 'Kafe', slug: 'kafe' },
   { name: 'Eczane', slug: 'eczane' },
   { name: 'Veteriner', slug: 'veteriner' },
   { name: 'Spor Salonu', slug: 'spor-salonu' },
-  { name: 'Guzellik Merkezi', slug: 'guzellik-merkezi' },
+  { name: 'Güzellik Merkezi', slug: 'guzellik-merkezi' },
 ];
 
 async function main() {
+  // Clean up common ASCII duplicates if they are orphaned (no businesses/jobCities)
+  const asciiDuplicates = ['Istanbul', 'Izmir', 'Tekirdag'];
+  for (const name of asciiDuplicates) {
+    const city = await prisma.city.findFirst({ where: { name, country: 'TR' } });
+    if (!city) continue;
+    const hasBusinesses = await prisma.business.count({ where: { cityId: city.id } });
+    const hasJobCities = await prisma.jobCity.count({ where: { cityId: city.id } });
+    if (hasBusinesses === 0 && hasJobCities === 0) {
+      await prisma.city.delete({ where: { id: city.id } });
+    }
+  }
+
   const adminEmail = process.env.ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL;
   const adminPassword = process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD;
   const passwordHash = await bcrypt.hash(adminPassword, 12);

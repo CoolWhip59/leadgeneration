@@ -1,4 +1,5 @@
-﻿import { NestFactory } from '@nestjs/core';
+﻿import { Logger } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import { Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { AppModule } from './modules/app/app.module';
@@ -6,8 +7,10 @@ import { PlacesService } from './modules/places/places.service';
 import { WebsiteCheckService } from './modules/website-check/website-check.service';
 import { PrismaService } from './modules/prisma/prisma.service';
 import { LEAD_QUEUE_NAME } from './modules/queue/queue.constants';
+import { WhatsappService } from './modules/whatsapp/whatsapp.service';
 
 async function bootstrap() {
+  const logger = new Logger('Worker');
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn', 'log'],
   });
@@ -15,6 +18,7 @@ async function bootstrap() {
   const prisma = app.get(PrismaService);
   const places = app.get(PlacesService);
   const websiteCheck = app.get(WebsiteCheckService);
+  const whatsapp = app.get(WhatsappService);
 
   const connection = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', {
     maxRetriesPerRequest: null,
@@ -23,7 +27,7 @@ async function bootstrap() {
   const worker = new Worker(
     LEAD_QUEUE_NAME,
     async (job) => {
-      const { jobId, jobCityId, city, category, cityId, categoryId } = job.data;
+      const { jobId, jobCityId, cityId, categoryId } = job.data;
       const recheckDays = Number(process.env.WEBSITE_RECHECK_DAYS || 30);
       const recheckMs = recheckDays * 24 * 60 * 60 * 1000;
 
@@ -43,34 +47,36 @@ async function bootstrap() {
         },
       });
 
-      const results = await places.searchBusinesses(city, category);
+      const results = await places.searchBusinesses(cityId, categoryId);
+      const processableResults = results;
 
       await prisma.$transaction([
         prisma.jobCity.update({
           where: { id: jobCityId },
-          data: { total: results.length },
+          data: { total: processableResults.length },
         }),
         prisma.job.update({
           where: { id: jobId },
-          data: { total: { increment: results.length } },
+          data: { total: { increment: processableResults.length } },
         }),
       ]);
 
       let processed = 0;
       let lastReported = 0;
 
-      for (const place of results) {
-        const existing = await prisma.business.findUnique({ where: { placeId: place.placeId } });
+      for (const place of processableResults) {
+        const existing = await prisma.business.findUnique({ where: { externalId: place.externalId } });
 
         const business = await prisma.business.upsert({
-          where: { placeId: place.placeId },
+          where: { externalId: place.externalId },
           update: {
+            source: place.source,
             name: place.name,
             address: place.address,
             phone: place.phone,
             websiteUrl: place.websiteUrl,
             googleMapsUrl: place.googleMapsUrl,
-            rating: place.rating,
+            rating: place.rating ?? null,
             lat: place.lat,
             lng: place.lng,
             cityId,
@@ -78,13 +84,14 @@ async function bootstrap() {
             deletedAt: null,
           },
           create: {
-            placeId: place.placeId,
+            externalId: place.externalId,
+            source: place.source,
             name: place.name,
             address: place.address,
             phone: place.phone,
             websiteUrl: place.websiteUrl,
             googleMapsUrl: place.googleMapsUrl,
-            rating: place.rating,
+            rating: place.rating ?? null,
             lat: place.lat,
             lng: place.lng,
             cityId,
@@ -128,7 +135,7 @@ async function bootstrap() {
         }
 
         processed += 1;
-        if (processed % 10 === 0 || processed === results.length) {
+        if (processed % 10 === 0 || processed === processableResults.length) {
           const delta = processed - lastReported;
           lastReported = processed;
 
@@ -163,13 +170,27 @@ async function bootstrap() {
           where: { jobId, status: 'FAILED' },
         });
 
+        const finalStatus = failed > 0 ? 'FAILED' : 'COMPLETED';
         await prisma.job.update({
           where: { id: jobId },
           data: {
-            status: failed > 0 ? 'FAILED' : 'COMPLETED',
+            status: finalStatus,
             finishedAt: new Date(),
           },
         });
+
+        if (finalStatus === 'COMPLETED') {
+          try {
+            const autoSendResult = await whatsapp.autoSendNoWebsiteForJob(jobId);
+            logger.log(
+              `WhatsApp auto-send for job ${jobId}: enabled=${autoSendResult.enabled} processed=${autoSendResult.processed} sent=${autoSendResult.sent} failed=${autoSendResult.failed} skipped=${autoSendResult.skipped}`,
+            );
+          } catch (error) {
+            logger.error(
+              `WhatsApp auto-send failed for job ${jobId}: ${error instanceof Error ? error.message : 'unknown_error'}`,
+            );
+          }
+        }
       }
 
       return { processed };

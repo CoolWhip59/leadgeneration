@@ -1,4 +1,15 @@
-﻿import { Body, Controller, Get, Param, Post, Query, Req, Sse, UnauthorizedException, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  Req,
+  Sse,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Observable } from 'rxjs';
 import { JwtAuthGuard } from '../auth/jwt.guard';
@@ -6,28 +17,44 @@ import { JobsService } from './jobs.service';
 import { CreateJobDto } from './jobs.dto';
 
 @Controller('jobs')
-@UseGuards(JwtAuthGuard)
 export class JobsController {
   constructor(private readonly jobs: JobsService, private readonly jwt: JwtService) {}
 
   @Post()
+  @UseGuards(JwtAuthGuard)
   create(@Req() req: any, @Body() dto: CreateJobDto) {
     return this.jobs.create(req.user.sub, dto);
   }
 
   @Get()
+  @UseGuards(JwtAuthGuard)
   list(@Req() req: any) {
     return this.jobs.list(req.user.sub);
   }
 
   @Get(':id')
+  @UseGuards(JwtAuthGuard)
   get(@Req() req: any, @Param('id') id: string) {
     return this.jobs.get(req.user.sub, id);
   }
 
   @Get(':id/errors')
+  @UseGuards(JwtAuthGuard)
   errors(@Req() req: any, @Param('id') id: string) {
     return this.jobs.getErrors(req.user.sub, id);
+  }
+
+  @Get(':id/stream-token')
+  @UseGuards(JwtAuthGuard)
+  async streamToken(@Req() req: any, @Param('id') id: string) {
+    await this.jobs.get(req.user.sub, id);
+
+    return {
+      streamToken: this.jwt.sign(
+        { sub: req.user.sub, scope: 'job_stream', jobId: id },
+        { secret: process.env.JWT_SECRET, expiresIn: '5m' },
+      ),
+    };
   }
 
   @Sse(':id/stream')
@@ -45,6 +72,15 @@ export class JobsController {
       payload = this.jwt.verify(finalToken, { secret: process.env.JWT_SECRET });
     } catch {
       throw new UnauthorizedException('Invalid token');
+    }
+
+    if (token) {
+      const isValidStreamToken =
+        payload?.scope === 'job_stream' && payload?.jobId === id && typeof payload?.sub === 'string';
+
+      if (!isValidStreamToken) {
+        throw new UnauthorizedException('Invalid stream token');
+      }
     }
 
     return new Observable((subscriber) => {

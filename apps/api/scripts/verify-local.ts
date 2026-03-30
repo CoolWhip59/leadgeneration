@@ -16,6 +16,20 @@ async function request(path: string, options: RequestInit = {}) {
   return { ok: response.ok, status: response.status, text };
 }
 
+async function requestWithNetworkRetry(path: string, options: RequestInit = {}, retries = 3) {
+  let attempt = 0;
+  while (attempt <= retries) {
+    try {
+      return await request(path, options);
+    } catch (err) {
+      attempt += 1;
+      if (attempt > retries) throw err;
+      await delay(500 * attempt);
+    }
+  }
+  throw new Error('Unreachable');
+}
+
 async function waitForHealth() {
   const maxAttempts = 30;
   const delayMs = 1000;
@@ -49,7 +63,7 @@ async function main() {
   await waitForHealth();
 
   // Ensure admin exists (seed should have created it); attempt login.
-  const login = await request('/auth/login', {
+  const login = await requestWithNetworkRetry('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
   });
@@ -75,7 +89,7 @@ async function main() {
   const cityIds = cities.slice(0, 2).map((c: any) => c.id);
   const categoryId = categories[0].id;
 
-  const jobRes = await request('/jobs', {
+  const jobRes = await requestWithNetworkRetry('/jobs', {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ cityIds, categoryId }),

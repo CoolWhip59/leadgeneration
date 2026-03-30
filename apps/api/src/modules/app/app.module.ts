@@ -13,6 +13,8 @@ import { QueueModule } from '../queue/queue.module';
 import { PlacesModule } from '../places/places.module';
 import { WebsiteCheckModule } from '../website-check/website-check.module';
 import { JobCitiesModule } from '../job-cities/job-cities.module';
+import { MetricsModule } from '../metrics/metrics.module';
+import { WhatsappModule } from '../whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -30,6 +32,8 @@ import { JobCitiesModule } from '../job-cities/job-cities.module';
     PlacesModule,
     WebsiteCheckModule,
     JobCitiesModule,
+    MetricsModule,
+    WhatsappModule,
   ],
   controllers: [AppController],
   providers: [AppService],

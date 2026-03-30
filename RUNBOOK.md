@@ -42,7 +42,7 @@ cp apps/web/.env.example apps/web/.env
 Minimum gerekli degiskenler (apps/api/.env):
 - DATABASE_URL
 - REDIS_URL
-- GOOGLE_PLACES_API_KEY (bos olabilir, joblar Places'te fail olur)
+- GOOGLE_PLACES_API_KEY (osm kullaniliyorsa bos olabilir)
 - GOOGLE_PLACES_CACHE_TTL_SEC
 - WORKER_CONCURRENCY
 - JWT_SECRET
@@ -50,6 +50,12 @@ Minimum gerekli degiskenler (apps/api/.env):
 - ADMIN_EMAIL
 - ADMIN_PASSWORD
 - SEED_ON_START (opsiyonel, sadece NODE_ENV=development)
+- PLACES_PROVIDER (osm | google)
+- OVERPASS_ENDPOINT
+- OVERPASS_TIMEOUT_SEC
+- OVERPASS_CACHE_TTL_SEC
+- NOMINATIM_ENDPOINT
+- NOMINATIM_MIN_INTERVAL_MS
 
 Minimum gerekli degiskenler (apps/web/.env):
 - NEXT_PUBLIC_API_BASE
@@ -76,6 +82,7 @@ npm install
 npm run prisma:generate
 npm run prisma:migrate
 npm run prisma:seed
+npm run cities:prefill-bbox
 ```
 
 Admin user default:
@@ -115,6 +122,11 @@ npm run dev
 - SSE: GET /jobs/:id/stream?token=JWT
 - Errors panel (bos liste donmeli)
 - Redis cache: ayni sehir+sektor icin tekrar job olustur, Places'den cache hit bekle
+
+OSM quick test:
+- PLACES_PROVIDER=osm
+- Sehirler: Istanbul + Ankara
+- Kategoriler: kuafor, oto-yikama
 
 ## 7) Olasi Hatalar
 
